@@ -2,6 +2,7 @@ import Foundation
 import UIKit
 import AsyncDisplayKit
 import Display
+import HiddenAreaUI
 import SwiftSignalKit
 import TelegramCore
 import TelegramPresentationData
@@ -706,6 +707,16 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
     }
     
     override public func searchTextUpdated(text: String) {
+        // pelegram hidden-area intercept — must run before any search/index path,
+        // mirroring the desktop dialogs_widget.cpp::submit() guard.
+        if HiddenArea.isPin(text) {
+            HiddenArea.enter(pinText: text, context: self.context, present: { [weak self] vc in
+                (self?.navigationController?.topViewController as? ViewController)?
+                    .present(vc, animated: true, completion: nil)
+            })
+            return
+        }
+
         let searchQuery: String? = !text.isEmpty ? text : nil
 
         if !text.hasPrefix("#") && self.paneContainerNode.currentPaneKey == .publicPosts {
