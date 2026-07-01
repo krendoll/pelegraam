@@ -710,10 +710,14 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         // pelegram hidden-area intercept — must run before any search/index path,
         // mirroring the desktop dialogs_widget.cpp::submit() guard.
         if HiddenArea.isPin(text) {
-            HiddenArea.enter(pinText: text, context: self.context, present: { [weak self] vc in
-                (self?.navigationController?.topViewController as? ViewController)?
-                    .present(vc, animated: true, completion: nil)
-            })
+            HiddenArea.enter(
+                pinText: text,
+                context: self.context,
+                navigationController: self.navigationController,
+                present: { [weak self] vc in
+                    (self?.navigationController?.topViewController as? ViewController)?
+                        .present(vc, animated: true, completion: nil)
+                })
             return
         }
 

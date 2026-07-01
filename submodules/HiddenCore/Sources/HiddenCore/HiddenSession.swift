@@ -88,6 +88,37 @@ public final class HiddenSession {
         status.send(.idle)
     }
 
+    // MARK: - Persisted preferences (behind the PIN)
+
+    /// "Disable online status" flag, restored from the vault on open.
+    public var hideOnline: Bool {
+        container.state.hideOnline
+    }
+
+    public func setHideOnline(_ on: Bool) {
+        guard container.isOpen, container.state.hideOnline != on else { return }
+        container.mutateState { $0.hideOnline = on }
+        container.save()
+    }
+
+    /// Hidden normal Telegram chats (peerId != 0), stored behind the PIN.
+    public var hiddenChats: [ChatEntry] {
+        container.state.chats.filter { $0.peerId != 0 }
+    }
+
+    public func addHiddenChat(peerId: Int64, title: String) {
+        guard container.isOpen, peerId != 0 else { return }
+        guard !container.state.chats.contains(where: { $0.peerId == peerId }) else { return }
+        container.addChat(ChatEntry(title: title, lastMessage: "", peerId: peerId))
+        container.save()
+    }
+
+    public func removeHiddenChat(peerId: Int64) {
+        guard container.isOpen else { return }
+        container.mutateState { $0.chats.removeAll { $0.peerId == peerId } }
+        container.save()
+    }
+
     // MARK: - Messaging (mirrors overlay sendRequests / delivered wiring)
 
     /// Encrypt and forward `text`. Echoes it locally as outgoing, like the

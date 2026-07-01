@@ -20,7 +20,9 @@ import HiddenCore
 import AccountContext
 import TelegramCore
 import TelegramApi
+import Postbox
 import SwiftSignalKit
+import Display
 
 // MARK: - Presence (stealth) — desktop parity: account.updateStatus(true) / 25 s
 
@@ -31,6 +33,46 @@ final class TelegramPresenceController: PresenceController {
         let _ = context.account.network
             .request(Api.functions.account.updateStatus(offline: .boolTrue))
             .startStandalone()
+    }
+}
+
+// MARK: - Engine ops for "hidden normal chats" (verified against the fork)
+
+enum HiddenChatsEngine {
+
+    /// Resolve `@username`, archive it (desktop parity: folders_EditPeerFolders
+    /// folderId=1), and report its int64 id back for persistence in the vault.
+    static func hideByUsername(
+        _ username: String,
+        context: AccountContext,
+        onResolved: @escaping (_ peerId: Int64, _ title: String) -> Void
+    ) {
+        let name = username.hasPrefix("@") ? username : "@" + username
+        let _ = (context.engine.peers.resolvePeerByName(name: name, referrer: nil)
+            |> deliverOnMainQueue).startStandalone(next: { result in
+                guard case let .result(maybePeer) = result, let peer = maybePeer else { return }
+                let _ = context.engine.peers.updatePeersGroupIdInteractively(
+                    peerIds: [peer.id], groupId: .archive).startStandalone()
+                onResolved(peer.id.toInt64(), name)
+            })
+    }
+
+    /// Un-archive back to the main list (groupId .root).
+    static func unhide(peerId: Int64, context: AccountContext) {
+        let _ = context.engine.peers.updatePeersGroupIdInteractively(
+            peerIds: [EnginePeer.Id(peerId)], groupId: .root).startStandalone()
+    }
+
+    /// Resolve the peer from its id and open its real chat.
+    static func open(peerId: Int64, context: AccountContext, navigationController: NavigationController?) {
+        guard let nc = navigationController else { return }
+        let _ = (context.engine.data.get(
+            TelegramEngine.EngineData.Item.Peer.Peer(id: EnginePeer.Id(peerId)))
+            |> deliverOnMainQueue).startStandalone(next: { maybePeer in
+                guard let peer = maybePeer else { return }
+                context.sharedContext.navigateToChatController(NavigateToChatControllerParams(
+                    navigationController: nc, context: context, chatLocation: .peer(peer)))
+            })
     }
 }
 
@@ -50,6 +92,7 @@ public enum HiddenArea {
     public static func enter(
         pinText: String,
         context: AccountContext,
+        navigationController: NavigationController?,
         present: @escaping (UIViewController) -> Void
     ) {
         let pin = SecurePIN(pinText)
@@ -64,7 +107,10 @@ public enum HiddenArea {
                 // The SwiftUI overlay needs iOS 15 APIs; the fork's min OS is 13.
                 // Target device is iOS 26.5, so this branch always runs there.
                 if #available(iOS 15.0, *) {
-                    let vc = HiddenAreaOverlayController(session: session, context: context)
+                    let vc = HiddenAreaOverlayController(
+                        session: session,
+                        context: context,
+                        navigationController: navigationController)
                     vc.modalPresentationStyle = .fullScreen
                     present(vc)
                 } else {
@@ -83,13 +129,24 @@ final class HiddenAreaOverlayController: UIViewController {
     private let session: HiddenSession
     private let stealth: StealthKeeper
     private let model: HiddenOverlayModel
+    private weak var hostNavigationController: NavigationController?
     private var observers: [NSObjectProtocol] = []
 
-    init(session: HiddenSession, context: AccountContext) {
+    init(session: HiddenSession, context: AccountContext, navigationController: NavigationController?) {
         self.session = session
         self.stealth = StealthKeeper(presence: TelegramPresenceController(context: context))
-        self.model = HiddenOverlayModel(session: session, stealth: stealth)
+        self.model = HiddenOverlayModel(session: session, stealth: stealth, context: context)
+        self.hostNavigationController = navigationController
         super.init(nibName: nil, bundle: nil)
+
+        // Open a hidden chat: dismiss the overlay first (desktop parity), then
+        // navigate on the underlying chat-list navigation controller.
+        self.model.onOpenChat = { [weak self] peerId in
+            guard let self = self else { return }
+            let nav = self.hostNavigationController
+            self.tearDownAndDismiss()
+            HiddenChatsEngine.open(peerId: peerId, context: context, navigationController: nav)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -139,17 +196,28 @@ final class HiddenOverlayModel: ObservableObject {
     @Published var messages: [HiddenMessage] = []
     @Published var statusText = "Connecting…"
     @Published var draft = ""
-    @Published var stealthOn = false {
-        didSet { stealth.setEnabled(stealthOn) }
-    }
+    @Published var stealthOn = false
+    @Published var hiddenChats: [ChatEntry] = []
+    @Published var addChatText = ""
+
+    /// Set by the host controller: open a hidden chat by peer id.
+    var onOpenChat: ((Int64) -> Void)?
 
     private let session: HiddenSession
     private let stealth: StealthKeeper
+    private let context: AccountContext
     private var cancellables = Set<AnyCancellable>()
 
-    init(session: HiddenSession, stealth: StealthKeeper) {
+    init(session: HiddenSession, stealth: StealthKeeper, context: AccountContext) {
         self.session = session
         self.stealth = stealth
+        self.context = context
+
+        // Restore persisted preferences from the vault (behind the PIN).
+        self.stealthOn = session.hideOnline
+        self.hiddenChats = session.hiddenChats
+        stealth.setEnabled(session.hideOnline)
+
         session.messages
             .receive(on: RunLoop.main)
             .sink { [weak self] in self?.messages.append($0) }
@@ -164,6 +232,35 @@ final class HiddenOverlayModel: ObservableObject {
         let text = draft
         draft = ""
         session.send(text)
+    }
+
+    func setStealth(_ on: Bool) {
+        stealthOn = on
+        stealth.setEnabled(on)
+        session.setHideOnline(on)
+    }
+
+    /// Add a normal Telegram chat (by @username) to the hidden list: archive it
+    /// so it leaves the main list, and persist its id behind the PIN.
+    func addHiddenChat() {
+        let name = addChatText.trimmingCharacters(in: .whitespacesAndNewlines)
+        addChatText = ""
+        guard !name.isEmpty else { return }
+        HiddenChatsEngine.hideByUsername(name, context: context) { [weak self] peerId, title in
+            guard let self = self else { return }
+            self.session.addHiddenChat(peerId: peerId, title: title)
+            self.hiddenChats = self.session.hiddenChats
+        }
+    }
+
+    func unhide(_ chat: ChatEntry) {
+        HiddenChatsEngine.unhide(peerId: chat.peerId, context: context)
+        session.removeHiddenChat(peerId: chat.peerId)
+        hiddenChats = session.hiddenChats
+    }
+
+    func open(_ chat: ChatEntry) {
+        onOpenChat?(chat.peerId)
     }
 
     private static func label(_ s: HiddenSession.Status) -> String {
@@ -190,11 +287,14 @@ struct HiddenOverlayView: View {
                     Text(model.statusText).font(.caption).foregroundColor(.secondary)
                 }
                 Spacer()
-                Toggle("Offline", isOn: $model.stealthOn).labelsHidden()
+                Toggle("Offline", isOn: Binding(
+                    get: { model.stealthOn },
+                    set: { model.setStealth($0) })).labelsHidden()
                 Button("Close", action: onClose).padding(.leading, 8)
             }
             .padding(.horizontal, 16).frame(height: 54)
             Divider()
+            hiddenChatsSection
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4) {
@@ -220,6 +320,44 @@ struct HiddenOverlayView: View {
         .background(Color(.systemBackground))
     }
 
+    // Hidden normal Telegram chats: archived so they leave the main list, listed
+    // here behind the PIN. Tap = open the real chat; swipe = un-hide.
+    private var hiddenChatsSection: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                TextField("Hide chat by @username…", text: $model.addChatText)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled(true)
+                    .onSubmit(model.addHiddenChat)
+                Button("Hide", action: model.addHiddenChat)
+                    .disabled(model.addChatText.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            if !model.hiddenChats.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(model.hiddenChats, id: \.peerId) { chat in
+                            Button(action: { model.open(chat) }) {
+                                Text(chat.title)
+                                    .font(.caption)
+                                    .padding(.vertical, 4).padding(.horizontal, 10)
+                                    .background(Color(.secondarySystemBackground))
+                                    .clipShape(Capsule())
+                            }
+                            .contextMenu {
+                                Button(role: .destructive) { model.unhide(chat) } label: {
+                                    Label("Un-hide", systemImage: "eye")
+                                }
+                            }
+                        }
+                    }.padding(.horizontal, 8)
+                }
+                .padding(.bottom, 6)
+            }
+            Divider()
+        }
+    }
+
     private func bubble(_ m: HiddenMessage) -> some View {
         HStack {
             if m.outgoing { Spacer(minLength: 40) }
@@ -234,10 +372,11 @@ struct HiddenOverlayView: View {
     }
 }
 
-// TODO (needs peer picker + navigation, deferred to keep the first build green):
-//  - Hide a normal chat from the list:
-//      context.engine.peers.updatePeersGroupIdInteractively(peerIds: [peerId], groupId: .archive)
-//    Persist the hidden peerId set in VaultState (behind the PIN).
-//  - Open a hidden chat from the overlay: dismiss first, then push
-//      ChatControllerImpl(context:subject:.peer(peerId)).
-//  See docs/pelegram-hidden/FEATURES.md.
+// All four hidden-area features are now wired here + in HiddenCore:
+//  1. relay chat (E2E)          — HiddenSession
+//  2. hide a normal chat        — HiddenChatsEngine.hideByUsername -> archive +
+//                                 persisted peerId in VaultState (behind the PIN)
+//  3. open a hidden chat        — HiddenChatsEngine.open (dismiss then navigate)
+//  4. appear-offline toggle     — StealthKeeper + persisted VaultState.hideOnline
+// Follow-up (nice-to-have): add-by-picker/context-menu instead of @username only;
+// resolve stored titles live. See docs/pelegram-hidden/FEATURES.md.

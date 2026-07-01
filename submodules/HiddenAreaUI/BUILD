@@ -13,6 +13,7 @@ swift_library(
     deps = [
         "//submodules/HiddenCore:HiddenCore",
         "//submodules/Display:Display",
+        "//submodules/Postbox:Postbox",
         "//submodules/AccountContext:AccountContext",
         "//submodules/TelegramCore:TelegramCore",
         "//submodules/TelegramApi:TelegramApi",

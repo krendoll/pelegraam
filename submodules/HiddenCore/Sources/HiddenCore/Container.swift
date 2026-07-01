@@ -26,16 +26,25 @@ import Security
 public struct ChatEntry: Equatable {
     public var title: String
     public var lastMessage: String
-    public init(title: String, lastMessage: String) {
+    /// Telegram peer id for a "hidden normal chat"; 0 for the relay chat / any
+    /// entry that is not a Telegram peer. Stored so the overlay can list and open
+    /// hidden chats without an async peer lookup.
+    public var peerId: Int64
+    public init(title: String, lastMessage: String, peerId: Int64 = 0) {
         self.title = title
         self.lastMessage = lastMessage
+        self.peerId = peerId
     }
 }
 
 public struct VaultState: Equatable {
     public var chats: [ChatEntry]
-    public init(chats: [ChatEntry] = []) {
+    /// "Disable online status" toggle, persisted behind the PIN (desktop parity:
+    /// tdata/.hidden_prefs).
+    public var hideOnline: Bool
+    public init(chats: [ChatEntry] = [], hideOnline: Bool = false) {
         self.chats = chats
+        self.hideOnline = hideOnline
     }
 }
 
@@ -46,7 +55,8 @@ public final class Container {
     public static let ivSize = 12
     public static let tagSize = 16
     public static let iterations = 100_000
-    static let magic: UInt32 = 0x0154_5648 // "HVT\x01" LE
+    static let magic: UInt32 = 0x0154_5648   // "HVT\x01" LE — V1 (title + lastMessage only)
+    static let magicV2: UInt32 = 0x0254_5648 // "HVT\x02" LE — V2 adds peerId per chat + hideOnline
 
     public private(set) var isOpen = false
     public private(set) var state = VaultState()
@@ -217,7 +227,8 @@ public final class Container {
 
     static func serialise(_ s: VaultState) -> Data {
         var out = Data()
-        appendU32LE(&out, magic)
+        appendU32LE(&out, magicV2)
+        out.append(s.hideOnline ? 1 : 0)
         appendU32LE(&out, UInt32(s.chats.count))
         for chat in s.chats {
             let title = Data(chat.title.utf8)
@@ -226,6 +237,7 @@ public final class Container {
             out.append(title)
             appendU32LE(&out, UInt32(msg.count))
             out.append(msg)
+            appendU64LE(&out, UInt64(bitPattern: chat.peerId))
         }
         return out
     }
@@ -233,9 +245,19 @@ public final class Container {
     static func deserialise(_ data: Data) -> VaultState? {
         let bytes = [UInt8](data)
         guard bytes.count >= 8 else { return nil }
-        guard readU32LE(bytes, 0) == magic else { return nil }
-        let count = readU32LE(bytes, 4)
-        var pos = 8
+        let m = readU32LE(bytes, 0)
+        let v2 = (m == magicV2)
+        guard v2 || m == magic else { return nil }
+
+        var pos = 4
+        var hideOnline = false
+        if v2 {
+            guard pos + 1 <= bytes.count else { return nil }
+            hideOnline = bytes[pos] != 0; pos += 1
+        }
+        guard pos + 4 <= bytes.count else { return nil }
+        let count = readU32LE(bytes, pos); pos += 4
+
         var chats: [ChatEntry] = []
         for _ in 0..<count {
             guard pos + 4 <= bytes.count else { return nil }
@@ -246,9 +268,14 @@ public final class Container {
             let mlen = Int(readU32LE(bytes, pos)); pos += 4
             guard pos + mlen <= bytes.count else { return nil }
             let msg = String(decoding: bytes[pos..<pos + mlen], as: UTF8.self); pos += mlen
-            chats.append(ChatEntry(title: title, lastMessage: msg))
+            var peerId: Int64 = 0
+            if v2 {
+                guard pos + 8 <= bytes.count else { return nil }
+                peerId = Int64(bitPattern: readU64LE(bytes, pos)); pos += 8
+            }
+            chats.append(ChatEntry(title: title, lastMessage: msg, peerId: peerId))
         }
-        return VaultState(chats: chats)
+        return VaultState(chats: chats, hideOnline: hideOnline)
     }
 
     private static func appendU32LE(_ out: inout Data, _ v: UInt32) {
@@ -258,9 +285,19 @@ public final class Container {
         out.append(UInt8((v >> 24) & 0xff))
     }
 
+    private static func appendU64LE(_ out: inout Data, _ v: UInt64) {
+        for i in 0..<8 { out.append(UInt8((v >> (8 * i)) & 0xff)) }
+    }
+
     private static func readU32LE(_ b: [UInt8], _ p: Int) -> UInt32 {
         return UInt32(b[p]) | (UInt32(b[p + 1]) << 8)
             | (UInt32(b[p + 2]) << 16) | (UInt32(b[p + 3]) << 24)
+    }
+
+    private static func readU64LE(_ b: [UInt8], _ p: Int) -> UInt64 {
+        var v: UInt64 = 0
+        for i in 0..<8 { v |= UInt64(b[p + i]) << (8 * i) }
+        return v
     }
 }
 
