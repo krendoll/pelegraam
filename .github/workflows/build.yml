@@ -6,6 +6,10 @@ on:
 
   workflow_dispatch:
 
+# create-release needs write access to Releases; default GITHUB_TOKEN is read-only.
+permissions:
+  contents: write
+
 jobs:
   build:
     # versions.json pins Xcode 26.2 / macOS 26, so the runner image must be
@@ -81,6 +85,16 @@ jobs:
             [ -e "$f" ] && cp -R "$f" build/DSYMs/
           done
           zip -r "./$OUTPUT_PATH/Telegram.DSYMs.zip" build/DSYMs 1>/dev/null
+
+      # Guaranteed artifact (no special permissions needed), independent of the
+      # deprecated create-release/upload-release-asset actions below.
+      - name: Upload IPA as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Telegram-ipa
+          path: /Users/Shared/telegram-ios/build/artifacts/Telegram.ipa
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Create Release
         id: create_release
