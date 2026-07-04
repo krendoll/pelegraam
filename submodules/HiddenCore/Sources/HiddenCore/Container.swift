@@ -38,6 +38,7 @@ public final class Container {
     static let magicV2: UInt32 = 0x0254_5648 // "HVT\x02"
     static let magicV3: UInt32 = 0x0354_5648 // "HVT\x03"
     static let magicV4: UInt32 = 0x0454_5648 // "HVT\x04"
+    static let magicV5: UInt32 = 0x0554_5648 // "HVT\x05" — media block adds segmentBytes
 
     public private(set) var isOpen = false
     public private(set) var state = VaultState()
@@ -237,7 +238,7 @@ public final class Container {
 
     static func serialise(_ s: VaultState) -> Data {
         var out = Data()
-        appendU32LE(&out, magicV4)
+        appendU32LE(&out, magicV5)
         out.append(s.hideOnline ? 1 : 0)
         appendU32LE(&out, UInt32(max(0, s.autoDeleteDays)))
         appendU32LE(&out, UInt32(s.conversations.count))
@@ -263,6 +264,7 @@ public final class Container {
                     appendU32LE(&out, UInt32(max(0, media.width)))
                     appendU32LE(&out, UInt32(max(0, media.height)))
                     appendU32LE(&out, UInt32(max(0, media.durationMs)))
+                    appendU32LE(&out, UInt32(max(0, media.segmentBytes)))
                 } else {
                     out.append(0)
                 }
@@ -275,12 +277,13 @@ public final class Container {
         let bytes = [UInt8](data)
         guard bytes.count >= 8 else { return nil }
         let m = readU32LE(bytes, 0)
-        if m == magicV4 { return deserialiseV4(bytes) }
+        if m == magicV5 { return deserialiseModern(bytes, hasSegmentBytes: true) }
+        if m == magicV4 { return deserialiseModern(bytes, hasSegmentBytes: false) }
         if m == magicV1 || m == magicV2 || m == magicV3 { return migrateLegacy(bytes, magic: m) }
         return nil
     }
 
-    private static func deserialiseV4(_ bytes: [UInt8]) -> VaultState? {
+    private static func deserialiseModern(_ bytes: [UInt8], hasSegmentBytes: Bool) -> VaultState? {
         var pos = 4
         guard pos + 1 <= bytes.count else { return nil }
         let hideOnline = bytes[pos] != 0; pos += 1
@@ -315,10 +318,16 @@ public final class Container {
                     guard let (w, r6) = takeU32(bytes, pos) else { return nil }; pos = r6
                     guard let (h, r7) = takeU32(bytes, pos) else { return nil }; pos = r7
                     guard let (dur, r8) = takeU32(bytes, pos) else { return nil }; pos = r8
+                    var segBytes: UInt32 = 0
+                    if hasSegmentBytes {
+                        guard let (sb, r9) = takeU32(bytes, pos) else { return nil }; pos = r9
+                        segBytes = sb
+                    }
                     media = MediaRef(id: blobId,
                                      kind: MediaKind(rawValue: Int(mkRaw)) ?? .file,
                                      filename: fname, mime: mime, size: Int(sz),
-                                     width: Int(w), height: Int(h), durationMs: Int(dur))
+                                     width: Int(w), height: Int(h), durationMs: Int(dur),
+                                     segmentBytes: Int(segBytes))
                 }
                 messages.append(StoredMessage(id: mid, text: text, outgoing: outgoing,
                                               timestamp: Double(bitPattern: tsBits), media: media))

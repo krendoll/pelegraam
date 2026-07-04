@@ -83,7 +83,7 @@ struct EncryptedVideoView: View {
     let session: HiddenSession
 
     @State private var player: AVPlayer?
-    @State private var loader: InMemoryAssetLoader?
+    @State private var loader: SegmentedAssetLoader?
 
     var body: some View {
         ZStack {
@@ -104,57 +104,51 @@ struct EncryptedVideoView: View {
 
     private func load() {
         guard player == nil else { return }
-        let ref = ref
-        let session = session
-        DispatchQueue.global(qos: .userInitiated).async {
-            guard let data = session.loadMedia(ref) else { return }
-            let loader = InMemoryAssetLoader(data: data, mime: ref.mime)
-            let rawExt = (ref.filename as NSString).pathExtension
-            let ext = rawExt.isEmpty ? (ref.kind == .audio ? "m4a" : "mp4") : rawExt
-            guard let url = URL(string: "hcmedia://local/\(UUID().uuidString).\(ext)") else { return }
-            let asset = AVURLAsset(url: url)
-            asset.resourceLoader.setDelegate(loader, queue: DispatchQueue(label: "hcmedia.loader"))
-            let item = AVPlayerItem(asset: asset)
-            let p = AVPlayer(playerItem: item)
-            DispatchQueue.main.async {
-                self.loader = loader
-                self.player = p
-            }
-        }
+        // No pre-load: the resource loader decrypts only the segments the player
+        // asks for, so a big video never sits whole in RAM.
+        let loader = SegmentedAssetLoader(ref: ref, session: session)
+        let rawExt = (ref.filename as NSString).pathExtension
+        let ext = rawExt.isEmpty ? (ref.kind == .audio ? "m4a" : "mp4") : rawExt
+        guard let url = URL(string: "hcmedia://local/\(UUID().uuidString).\(ext)") else { return }
+        let asset = AVURLAsset(url: url)
+        asset.resourceLoader.setDelegate(loader, queue: DispatchQueue(label: "hcmedia.loader"))
+        let item = AVPlayerItem(asset: asset)
+        self.loader = loader
+        self.player = AVPlayer(playerItem: item)
     }
 }
 
-/// Serves a fully-decrypted in-memory blob to AVFoundation on byte-range
-/// request, so plaintext video/audio never lands on disk.
-final class InMemoryAssetLoader: NSObject, AVAssetResourceLoaderDelegate {
-    private let data: Data
-    private let mime: String
+/// Serves an encrypted, segmented blob to AVFoundation on byte-range request by
+/// decrypting only the requested range (via HiddenSession.loadMediaRange), so
+/// neither the whole plaintext nor a temp file ever exists on disk.
+final class SegmentedAssetLoader: NSObject, AVAssetResourceLoaderDelegate {
+    private let ref: MediaRef
+    private let session: HiddenSession
 
-    init(data: Data, mime: String) {
-        self.data = data
-        self.mime = mime
+    init(ref: MediaRef, session: HiddenSession) {
+        self.ref = ref
+        self.session = session
     }
 
     func resourceLoader(_ resourceLoader: AVAssetResourceLoader,
                         shouldWaitForLoadingOfRequestedResource loadingRequest: AVAssetResourceLoadingRequest) -> Bool {
         if let info = loadingRequest.contentInformationRequest {
-            if let ut = UTType(mimeType: mime) { info.contentType = ut.identifier }
+            if let ut = UTType(mimeType: ref.mime) { info.contentType = ut.identifier }
             info.isByteRangeAccessSupported = true
-            info.contentLength = Int64(data.count)
+            info.contentLength = Int64(ref.size)
         }
         if let req = loadingRequest.dataRequest {
             let start = Int(req.currentOffset)
-            if start >= data.count {
+            if start >= ref.size {
                 loadingRequest.finishLoading()
                 return true
             }
-            let remaining = data.count - start
+            let remaining = ref.size - start
             let length = req.requestsAllDataToEndOfResource
                 ? remaining
                 : min(req.requestedLength, remaining)
-            let end = min(start + length, data.count)
-            if end > start {
-                req.respond(with: data.subdata(in: start..<end))
+            if length > 0, let data = session.loadMediaRange(ref, offset: start, length: length) {
+                req.respond(with: data)
             }
             loadingRequest.finishLoading()
         }

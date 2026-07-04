@@ -10,9 +10,10 @@ final class ContainerTests: XCTestCase {
         return dir
     }
 
-    func testSerialiseRoundTripV4() {
+    func testSerialiseRoundTripV5() {
         let media = MediaRef(id: "blob-1", kind: .image, filename: "a.jpg",
-                             mime: "image/jpeg", size: 1234, width: 640, height: 480)
+                             mime: "image/jpeg", size: 1234, width: 640, height: 480,
+                             segmentBytes: 512 * 1024)
         let state = VaultState(
             hideOnline: true,
             autoDeleteDays: 7,
@@ -26,14 +27,15 @@ final class ContainerTests: XCTestCase {
                              peerId: -1001234567890),
             ])
         let data = Container.serialise(state)
-        // V4 magic 0x04545648 (LE): 48 56 54 04.
-        XCTAssertEqual([UInt8](data.prefix(4)), [0x48, 0x56, 0x54, 0x04])
+        // V5 magic 0x05545648 (LE): 48 56 54 05.
+        XCTAssertEqual([UInt8](data.prefix(4)), [0x48, 0x56, 0x54, 0x05])
         guard let parsed = Container.deserialise(data) else { return XCTFail("deserialise") }
         XCTAssertEqual(parsed, state)
         XCTAssertTrue(parsed.hideOnline)
         XCTAssertEqual(parsed.autoDeleteDays, 7)
         XCTAssertEqual(parsed.conversations[1].peerId, -1001234567890)
         XCTAssertEqual(parsed.conversations[0].messages[1].media?.width, 640)
+        XCTAssertEqual(parsed.conversations[0].messages[1].media?.segmentBytes, 512 * 1024)
     }
 
     func testMigrateV3ToConversations() {

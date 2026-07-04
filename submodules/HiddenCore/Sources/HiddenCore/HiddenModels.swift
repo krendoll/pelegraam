@@ -52,7 +52,7 @@ public enum MediaKind: Int, Equatable {
 
 /// Metadata pointing at an encrypted blob in MediaStore. No plaintext here.
 public struct MediaRef: Equatable {
-    public var id: String        // blob id inside MediaStore (== on-disk filename)
+    public var id: String        // blob id inside MediaStore (dir for segmented, file for single-blob)
     public var kind: MediaKind
     public var filename: String
     public var mime: String
@@ -60,9 +60,14 @@ public struct MediaRef: Equatable {
     public var width: Int        // 0 if unknown
     public var height: Int       // 0 if unknown
     public var durationMs: Int   // 0 if unknown / not applicable
+    /// Storage segment size in bytes. >0 => segmented store (each segment is its
+    /// own GCM blob, so the media can be range-decrypted without loading it all
+    /// into RAM). 0 => legacy single-blob store.
+    public var segmentBytes: Int
 
     public init(id: String, kind: MediaKind, filename: String, mime: String,
-                size: Int, width: Int = 0, height: Int = 0, durationMs: Int = 0) {
+                size: Int, width: Int = 0, height: Int = 0, durationMs: Int = 0,
+                segmentBytes: Int = 0) {
         self.id = id
         self.kind = kind
         self.filename = filename
@@ -71,6 +76,7 @@ public struct MediaRef: Equatable {
         self.width = width
         self.height = height
         self.durationMs = durationMs
+        self.segmentBytes = segmentBytes
     }
 }
 

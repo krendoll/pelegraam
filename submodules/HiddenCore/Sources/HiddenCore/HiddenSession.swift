@@ -56,6 +56,8 @@ public final class HiddenSession {
     private var bufferedBytes = 0
 
     private let chunkSize = 48 * 1024
+    /// On-disk segment size for stored media (range-decryptable, see MediaStore).
+    private let storeSegmentBytes = 512 * 1024
     private let maxMediaBytes = 200 * 1024 * 1024
     private let maxConcurrentIncoming = 6
     private let maxBufferedBytes = 220 * 1024 * 1024
@@ -198,9 +200,10 @@ public final class HiddenSession {
         let kind = MediaKind.classify(mime: mime, filename: filename)
         sendQueue.async { [weak self] in
             guard let self = self else { return }
-            guard let blobId = self.mediaStore.store(data) else { return }
+            guard let blobId = self.mediaStore.storeSegmented(data, segmentBytes: self.storeSegmentBytes) else { return }
             let ref = MediaRef(id: blobId, kind: kind, filename: filename, mime: mime,
-                               size: data.count, width: width, height: height, durationMs: durationMs)
+                               size: data.count, width: width, height: height,
+                               durationMs: durationMs, segmentBytes: self.storeSegmentBytes)
             let msg = StoredMessage(text: caption, outgoing: true,
                                     timestamp: Date().timeIntervalSince1970, media: ref)
             DispatchQueue.main.async { self.append(msg, to: convId) }
@@ -232,7 +235,17 @@ public final class HiddenSession {
 
     // MARK: - Media access
 
-    public func loadMedia(_ ref: MediaRef) -> Data? { mediaStore.load(ref.id) }
+    /// Whole-file decrypt (in memory). Use for images.
+    public func loadMedia(_ ref: MediaRef) -> Data? {
+        mediaStore.loadWhole(id: ref.id, segmentBytes: ref.segmentBytes, size: ref.size)
+    }
+
+    /// Range decrypt — only the segments overlapping the request are touched, so
+    /// video/audio playback never holds the whole file in RAM.
+    public func loadMediaRange(_ ref: MediaRef, offset: Int, length: Int) -> Data? {
+        mediaStore.loadRange(id: ref.id, segmentBytes: ref.segmentBytes,
+                             size: ref.size, offset: offset, length: length)
+    }
 
     // MARK: - Relay wiring
 
@@ -344,13 +357,15 @@ public final class HiddenSession {
             assembled.append(part)
         }
         dropIncoming(fileId)
-        guard assembled.count <= maxMediaBytes, let blobId = mediaStore.store(assembled) else { return }
+        guard assembled.count <= maxMediaBytes,
+              let blobId = mediaStore.storeSegmented(assembled, segmentBytes: storeSegmentBytes) else { return }
         let meta = inflight.meta
         let ref = MediaRef(id: blobId,
                            kind: MediaKind(rawValue: meta.kind) ?? .file,
                            filename: meta.filename, mime: meta.mime,
                            size: assembled.count, width: meta.width,
-                           height: meta.height, durationMs: meta.durationMs)
+                           height: meta.height, durationMs: meta.durationMs,
+                           segmentBytes: storeSegmentBytes)
         let m = StoredMessage(text: "", outgoing: false,
                               timestamp: Date().timeIntervalSince1970, media: ref)
         append(m, to: inflight.convId)

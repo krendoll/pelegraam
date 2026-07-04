@@ -178,15 +178,17 @@ final class HiddenAreaHostController: UIViewController {
         view.addSubview(host.view)
         host.didMove(toParent: self)
 
-        // Deactivation triggers (mirror subscribeToDeactivationTriggers):
-        // background / resign-active wipe the key and drop the overlay.
+        // Deactivation trigger: wipe the key + drop the overlay when the app is
+        // actually backgrounded. We deliberately do NOT wipe on willResignActive
+        // — that fires for transient interruptions AND for the system photo/file
+        // pickers and share sheet, which would tear the hidden area down in the
+        // middle of attaching a file. didEnterBackground still covers home / app
+        // switcher / lock (the "casual glance" cases this feature guards against).
         let nc = NotificationCenter.default
-        for name in [UIApplication.willResignActiveNotification,
-                     UIApplication.didEnterBackgroundNotification] {
-            observers.append(nc.addObserver(forName: name, object: nil, queue: .main) {
-                [weak self] _ in self?.tearDownAndDismiss()
-            })
-        }
+        observers.append(nc.addObserver(forName: UIApplication.didEnterBackgroundNotification,
+                                        object: nil, queue: .main) {
+            [weak self] _ in self?.tearDownAndDismiss()
+        })
     }
 
     private func tearDownAndDismiss() {
