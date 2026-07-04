@@ -13,18 +13,23 @@ import HiddenCore
 private func pelegramApplyHiddenPeers(_ list: EngineChatList) -> EngineChatList {
     let hidden = HiddenPeers.shared.all()
     if hidden.isEmpty { return list }   // zero overhead when nothing is hidden
-    func keep(_ item: EngineChatList.Item) -> Bool {
+    func keepItem(_ item: EngineChatList.Item) -> Bool {
         return !hidden.contains(item.renderedPeer.peerId.toInt64())
+    }
+    // GroupItem.Item is a distinct nested type (archive-preview cell); its peer
+    // lives on `.peer`, not `.renderedPeer`.
+    func keepGroupItem(_ item: EngineChatList.GroupItem.Item) -> Bool {
+        return !hidden.contains(item.peer.peerId.toInt64())
     }
     let groupItems = list.groupItems.map { group in
         EngineChatList.GroupItem(
             id: group.id, topMessage: group.topMessage,
-            items: group.items.filter(keep), unreadCount: group.unreadCount)
+            items: group.items.filter(keepGroupItem), unreadCount: group.unreadCount)
     }
     return EngineChatList(
-        items: list.items.filter(keep),
+        items: list.items.filter(keepItem),
         groupItems: groupItems,
-        additionalItems: list.additionalItems.filter { keep($0.item) },
+        additionalItems: list.additionalItems.filter { keepItem($0.item) },
         hasEarlier: list.hasEarlier,
         hasLater: list.hasLater,
         isLoading: list.isLoading)
