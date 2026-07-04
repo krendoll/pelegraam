@@ -81,7 +81,7 @@ public final class RelayClient: NSObject {
         let msgId = UUID().uuidString.lowercased()
         let frame = RelayOutbound.send(msgId: msgId,
                                        blobBase64: encryptedBlob.base64EncodedString())
-        task.send(.data(frame.jsonData())) { [weak self] error in
+        task.send(.string(String(decoding: frame.jsonData(), as: UTF8.self))) { [weak self] error in
             if error != nil { self?.handleSocketBroken() }
         }
         return msgId
@@ -101,14 +101,14 @@ public final class RelayClient: NSObject {
 
     private func sendAuth() {
         guard let token = token, let task = task else { return }
-        task.send(.data(RelayOutbound.auth(token: token).jsonData())) { [weak self] error in
+        task.send(.string(String(decoding: RelayOutbound.auth(token: token).jsonData(), as: UTF8.self))) { [weak self] error in
             if error != nil { self?.handleSocketBroken() }
         }
     }
 
     private func sendAck(_ msgId: String) {
         guard isConnected, let task = task else { return }
-        task.send(.data(RelayOutbound.ack(msgId: msgId).jsonData()), completionHandler: { _ in })
+        task.send(.string(String(decoding: RelayOutbound.ack(msgId: msgId).jsonData(), as: UTF8.self)), completionHandler: { _ in })
     }
 
     private func receiveLoop() {
