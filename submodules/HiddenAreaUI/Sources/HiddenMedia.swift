@@ -121,6 +121,7 @@ struct EncryptedVideoView: View {
 /// Serves an encrypted, segmented blob to AVFoundation on byte-range request by
 /// decrypting only the requested range (via HiddenSession.loadMediaRange), so
 /// neither the whole plaintext nor a temp file ever exists on disk.
+@available(iOS 15.0, *)
 final class SegmentedAssetLoader: NSObject, AVAssetResourceLoaderDelegate {
     private let ref: MediaRef
     private let session: HiddenSession
