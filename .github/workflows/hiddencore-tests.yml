@@ -1,0 +1,25 @@
+name: HiddenCore tests
+
+# Cheap pre-CI gate: runs `swift test` on the standalone HiddenCore SwiftPM
+# package only (crypto / container / vault migrations / relay protocol / media
+# framing). ~2 minutes on a macOS runner vs ~1 hour for the full IPA build, so
+# it catches core-logic regressions without paying for the whole app.
+#
+# Manual trigger only — never runs on push.
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          swift --version
+          xcodebuild -version || true
+
+      - name: swift test (HiddenCore)
+        working-directory: submodules/HiddenCore
+        run: swift test -v

@@ -710,6 +710,9 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         // pelegram hidden-area intercept — must run before any search/index path,
         // mirroring the desktop dialogs_widget.cpp::submit() guard.
         if HiddenArea.isPin(text) {
+            // Wipe the PIN out of the visible search field immediately — it must
+            // not linger in the UITextField (matches SecurePIN's intent).
+            self.setQuery?(nil, [], "")
             HiddenArea.enter(
                 pinText: text,
                 context: self.context,

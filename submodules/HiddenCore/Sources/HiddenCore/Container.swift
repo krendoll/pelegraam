@@ -173,6 +173,12 @@ public final class Container {
                 at: vaultURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true)
             try file.write(to: vaultURL, options: [.atomic, .completeFileProtection])
+            // Keep the vault (all history + media metadata) out of iCloud/iTunes
+            // backups, matching MediaStore's blob handling.
+            var url = vaultURL
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try? url.setResourceValues(values)
             return true
         } catch {
             return false

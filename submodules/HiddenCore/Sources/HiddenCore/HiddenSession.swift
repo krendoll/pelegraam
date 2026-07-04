@@ -45,11 +45,21 @@ public final class HiddenSession {
     private var seenIds: [String: Set<String>] = [:]   // convId -> delivered msg ids
 
     /// In-flight inbound media reassembly, keyed by wire fileId.
-    private struct Incoming { var meta: HiddenMediaMeta; var convId: String; var chunks: [Int: Data] }
+    private struct Incoming {
+        var meta: HiddenMediaMeta
+        var convId: String
+        var chunks: [Int: Data]
+        var bytes: Int      // running sum of buffered chunk bytes
+        var started: Double // for stale-transfer eviction
+    }
     private var incoming: [String: Incoming] = [:]
+    private var bufferedBytes = 0
 
     private let chunkSize = 48 * 1024
     private let maxMediaBytes = 200 * 1024 * 1024
+    private let maxConcurrentIncoming = 6
+    private let maxBufferedBytes = 220 * 1024 * 1024
+    private let incomingStaleSeconds: Double = 300
     private let sendQueue = DispatchQueue(label: "hiddencore.media.send", qos: .userInitiated)
 
     public init(container: Container,
@@ -93,6 +103,7 @@ public final class HiddenSession {
         clientCancellables.removeAll()
         seenIds.removeAll()
         incoming.removeAll()
+        bufferedBytes = 0
         container.close()
         isActive = false
         conversations.send([])
@@ -260,20 +271,34 @@ public final class HiddenSession {
         seen.insert(msg.id); seenIds[convId] = seen
 
         guard let pt = E2ECrypto.decrypt(msg.blob, key: e2eKey) else { return } // bad tag -> ignore
+        pruneIncoming()
         switch HiddenPayload.decode(pt) {
         case let .text(text):
             let m = StoredMessage(text: text, outgoing: false, timestamp: Date().timeIntervalSince1970)
             append(m, to: convId)
         case let .mediaMeta(meta):
             guard meta.size <= maxMediaBytes, meta.chunks >= 0 else { return }
-            // Preserve any chunks that arrived before the meta.
-            let existing = incoming[meta.fileId]?.chunks ?? [:]
-            incoming[meta.fileId] = Incoming(meta: meta, convId: convId, chunks: existing)
+            // Preserve any chunks that arrived before the meta (bytes already counted).
+            let existing = incoming[meta.fileId]
+            incoming[meta.fileId] = Incoming(meta: meta, convId: convId,
+                                             chunks: existing?.chunks ?? [:],
+                                             bytes: existing?.bytes ?? 0,
+                                             started: existing?.started ?? Date().timeIntervalSince1970)
             tryComplete(meta.fileId)
         case let .mediaChunk(fileId, index, _, data):
+            // Global buffer guard: never let in-flight transfers blow the cap.
+            guard bufferedBytes + data.count <= maxBufferedBytes else { return }
             if var inflight = incoming[fileId] {
-                inflight.chunks[index] = data
-                incoming[fileId] = inflight
+                // Per-transfer guard: don't exceed the declared size (+ one chunk slack).
+                if inflight.meta.chunks >= 0, inflight.bytes + data.count > inflight.meta.size + chunkSize {
+                    dropIncoming(fileId); return
+                }
+                if inflight.chunks[index] == nil {   // ignore duplicate indices
+                    inflight.chunks[index] = data
+                    inflight.bytes += data.count
+                    bufferedBytes += data.count
+                    incoming[fileId] = inflight
+                }
             } else {
                 // Chunk before meta: stash under a placeholder (chunks = -1 keeps
                 // tryComplete waiting until the real meta arrives).
@@ -281,11 +306,30 @@ public final class HiddenSession {
                     meta: HiddenMediaMeta(fileId: fileId, kind: MediaKind.file.rawValue,
                                           filename: "file", mime: "application/octet-stream",
                                           size: 0, chunks: -1),
-                    convId: convId, chunks: [:])
-                placeholder.chunks[index] = data
+                    convId: convId, chunks: [index: data], bytes: data.count,
+                    started: Date().timeIntervalSince1970)
+                bufferedBytes += data.count
                 incoming[fileId] = placeholder
             }
             tryComplete(fileId)
+        }
+    }
+
+    private func dropIncoming(_ fileId: String) {
+        if let inf = incoming[fileId] { bufferedBytes -= inf.bytes }
+        incoming[fileId] = nil
+    }
+
+    /// Evict stale (unfinished) transfers and enforce the concurrency cap so a
+    /// peer can't pin RAM with dangling partial uploads.
+    private func pruneIncoming() {
+        let now = Date().timeIntervalSince1970
+        for (id, inf) in incoming where now - inf.started > incomingStaleSeconds {
+            dropIncoming(id)
+        }
+        while incoming.count > maxConcurrentIncoming {
+            guard let oldest = incoming.min(by: { $0.value.started < $1.value.started })?.key else { break }
+            dropIncoming(oldest)
         }
     }
 
@@ -299,7 +343,7 @@ public final class HiddenSession {
             guard let part = inflight.chunks[i] else { return } // missing chunk, wait
             assembled.append(part)
         }
-        incoming[fileId] = nil
+        dropIncoming(fileId)
         guard assembled.count <= maxMediaBytes, let blobId = mediaStore.store(assembled) else { return }
         let meta = inflight.meta
         let ref = MediaRef(id: blobId,

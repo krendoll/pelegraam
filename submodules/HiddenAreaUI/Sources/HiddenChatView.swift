@@ -67,7 +67,7 @@ struct HiddenChatView: View {
             DocumentPicker { picked in send(picked) }
         }
         .sheet(item: $exportItem) { item in
-            ShareSheet(items: [item.url])
+            ShareSheet(items: [item.url], cleanupURL: item.url)
         }
         .confirmationDialog("Export this file? The decrypted copy will leave the encrypted area.",
                             isPresented: Binding(get: { exportCandidate != nil },

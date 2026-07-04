@@ -4,6 +4,9 @@ import PackageDescription
 let package = Package(
     name: "HiddenCore",
     platforms: [
+        // The product ships iOS-only. `.macOS` is kept ONLY so `swift test` can
+        // run the crypto/container/protocol suite on a Mac/CI host without the
+        // full Telegram-iOS tree — it is not a shipping target.
         .iOS(.v15),
         .macOS(.v12)
     ],

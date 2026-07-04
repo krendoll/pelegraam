@@ -260,22 +260,39 @@ struct DocumentPicker: UIViewControllerRepresentable {
 enum HiddenExport {
     /// Decrypt a blob to a temp file for sharing. FLAGGED: this is the single
     /// deliberate exception to "no plaintext on disk", gated behind an explicit
-    /// user action + confirm in the UI.
+    /// user action + confirm in the UI. Written into a unique, protected folder
+    /// that the ShareSheet deletes once dismissed.
     static func temporaryURL(for ref: MediaRef, session: HiddenSession) -> URL? {
         guard let data = session.loadMedia(ref) else { return nil }
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("hcexport", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let name = ref.filename.isEmpty ? "file" : ref.filename
-        let url = dir.appendingPathComponent(name)
-        do { try data.write(to: url, options: [.atomic]); return url } catch { return nil }
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hcexport-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let name = ref.filename.isEmpty ? "file" : ref.filename
+            let url = dir.appendingPathComponent(name)
+            try data.write(to: url, options: [.atomic, .completeFileProtection])
+            return url
+        } catch {
+            return nil
+        }
     }
 }
 
 @available(iOS 15.0, *)
 struct ShareSheet: UIViewControllerRepresentable {
     let items: [Any]
+    /// If set, this file's *enclosing* directory is deleted when the sheet closes.
+    var cleanupURL: URL? = nil
+
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
+        let vc = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        let cleanup = cleanupURL
+        vc.completionWithItemsHandler = { _, _, _, _ in
+            if let u = cleanup {
+                try? FileManager.default.removeItem(at: u.deletingLastPathComponent())
+            }
+        }
+        return vc
     }
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
