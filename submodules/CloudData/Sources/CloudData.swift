@@ -15,8 +15,13 @@ private func fetchRawData(prefix: String) -> Signal<Data, FetchError> {
     // iCloud container entitlement, so CKContainer.default() traps at launch
     // (EXC_BREAKPOINT). This is only the rare "emergency datacenter" connectivity
     // fallback, so disable it entirely — normal login/connection is unaffected.
+    // The error is delivered ASYNCHRONOUSLY (matching the original CloudKit callback)
+    // so the upstream `|> restart` in fetch() does not re-subscribe synchronously,
+    // which would recurse until the stack overflows (SIGBUS).
     return Signal { subscriber in
-        subscriber.putError(.generic)
+        DispatchQueue.global().async {
+            subscriber.putError(.generic)
+        }
         return ActionDisposable {
         }
     }
