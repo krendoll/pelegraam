@@ -121,13 +121,32 @@ public final class HiddenSession {
 
     // MARK: - Messaging (mirrors overlay sendRequests / delivered wiring)
 
+    /// Relay-chat history persisted behind the PIN, oldest first. Load this into
+    /// the overlay on open so messages survive dismiss/reopen.
+    public var history: [HiddenMessage] {
+        container.state.messages.map {
+            HiddenMessage(text: $0.text, outgoing: $0.outgoing,
+                          date: Date(timeIntervalSince1970: $0.timestamp))
+        }
+    }
+
+    private func persist(_ text: String, outgoing: Bool) {
+        guard container.isOpen else { return }
+        container.mutateState {
+            $0.messages.append(StoredMessage(text: text, outgoing: outgoing,
+                                             timestamp: Date().timeIntervalSince1970))
+        }
+        container.save()
+    }
+
     /// Encrypt and forward `text`. Echoes it locally as outgoing, like the
-    /// desktop overlay does.
+    /// desktop overlay does, and persists it behind the PIN.
     public func send(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, relay.isConnected else { return }
         guard let blob = E2ECrypto.encrypt(Data(trimmed.utf8), key: e2eKey) else { return }
         relay.sendBlob(blob)
+        persist(trimmed, outgoing: true)
         messages.send(HiddenMessage(text: trimmed, outgoing: true, date: Date()))
     }
 
@@ -159,6 +178,7 @@ public final class HiddenSession {
         seenIds.insert(msg.id)
         guard let pt = E2ECrypto.decrypt(msg.blob, key: e2eKey) else { return } // bad tag -> ignore
         let text = String(decoding: pt, as: UTF8.self)
+        persist(text, outgoing: false)
         messages.send(HiddenMessage(text: text, outgoing: false, date: Date()))
     }
 }

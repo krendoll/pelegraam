@@ -37,14 +37,30 @@ public struct ChatEntry: Equatable {
     }
 }
 
+/// A persisted relay-chat message (kept behind the PIN so history survives
+/// closing and reopening the hidden area).
+public struct StoredMessage: Equatable {
+    public var text: String
+    public var outgoing: Bool
+    public var timestamp: Double
+    public init(text: String, outgoing: Bool, timestamp: Double) {
+        self.text = text
+        self.outgoing = outgoing
+        self.timestamp = timestamp
+    }
+}
+
 public struct VaultState: Equatable {
     public var chats: [ChatEntry]
     /// "Disable online status" toggle, persisted behind the PIN (desktop parity:
     /// tdata/.hidden_prefs).
     public var hideOnline: Bool
-    public init(chats: [ChatEntry] = [], hideOnline: Bool = false) {
+    /// Relay-chat history, persisted so it survives dismiss/reopen.
+    public var messages: [StoredMessage]
+    public init(chats: [ChatEntry] = [], hideOnline: Bool = false, messages: [StoredMessage] = []) {
         self.chats = chats
         self.hideOnline = hideOnline
+        self.messages = messages
     }
 }
 
@@ -57,6 +73,7 @@ public final class Container {
     public static let iterations = 100_000
     static let magic: UInt32 = 0x0154_5648   // "HVT\x01" LE — V1 (title + lastMessage only)
     static let magicV2: UInt32 = 0x0254_5648 // "HVT\x02" LE — V2 adds peerId per chat + hideOnline
+    static let magicV3: UInt32 = 0x0354_5648 // "HVT\x03" LE — V3 adds persisted relay messages
 
     public private(set) var isOpen = false
     public private(set) var state = VaultState()
@@ -227,7 +244,7 @@ public final class Container {
 
     static func serialise(_ s: VaultState) -> Data {
         var out = Data()
-        appendU32LE(&out, magicV2)
+        appendU32LE(&out, magicV3)
         out.append(s.hideOnline ? 1 : 0)
         appendU32LE(&out, UInt32(s.chats.count))
         for chat in s.chats {
@@ -239,6 +256,14 @@ public final class Container {
             out.append(msg)
             appendU64LE(&out, UInt64(bitPattern: chat.peerId))
         }
+        appendU32LE(&out, UInt32(s.messages.count))
+        for m in s.messages {
+            let text = Data(m.text.utf8)
+            appendU32LE(&out, UInt32(text.count))
+            out.append(text)
+            out.append(m.outgoing ? 1 : 0)
+            appendU64LE(&out, m.timestamp.bitPattern)
+        }
         return out
     }
 
@@ -246,12 +271,13 @@ public final class Container {
         let bytes = [UInt8](data)
         guard bytes.count >= 8 else { return nil }
         let m = readU32LE(bytes, 0)
-        let v2 = (m == magicV2)
-        guard v2 || m == magic else { return nil }
+        let v3 = (m == magicV3)
+        let hasExtended = (m == magicV2 || v3) // hideOnline + peerId present in V2 and V3
+        guard hasExtended || m == magic else { return nil }
 
         var pos = 4
         var hideOnline = false
-        if v2 {
+        if hasExtended {
             guard pos + 1 <= bytes.count else { return nil }
             hideOnline = bytes[pos] != 0; pos += 1
         }
@@ -269,13 +295,29 @@ public final class Container {
             guard pos + mlen <= bytes.count else { return nil }
             let msg = String(decoding: bytes[pos..<pos + mlen], as: UTF8.self); pos += mlen
             var peerId: Int64 = 0
-            if v2 {
+            if hasExtended {
                 guard pos + 8 <= bytes.count else { return nil }
                 peerId = Int64(bitPattern: readU64LE(bytes, pos)); pos += 8
             }
             chats.append(ChatEntry(title: title, lastMessage: msg, peerId: peerId))
         }
-        return VaultState(chats: chats, hideOnline: hideOnline)
+
+        var messages: [StoredMessage] = []
+        if v3 {
+            guard pos + 4 <= bytes.count else { return nil }
+            let mcount = readU32LE(bytes, pos); pos += 4
+            for _ in 0..<mcount {
+                guard pos + 4 <= bytes.count else { return nil }
+                let tlen = Int(readU32LE(bytes, pos)); pos += 4
+                guard pos + tlen <= bytes.count else { return nil }
+                let text = String(decoding: bytes[pos..<pos + tlen], as: UTF8.self); pos += tlen
+                guard pos + 1 + 8 <= bytes.count else { return nil }
+                let outgoing = bytes[pos] != 0; pos += 1
+                let ts = Double(bitPattern: readU64LE(bytes, pos)); pos += 8
+                messages.append(StoredMessage(text: text, outgoing: outgoing, timestamp: ts))
+            }
+        }
+        return VaultState(chats: chats, hideOnline: hideOnline, messages: messages)
     }
 
     private static func appendU32LE(_ out: inout Data, _ v: UInt32) {

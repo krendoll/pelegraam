@@ -213,9 +213,10 @@ final class HiddenOverlayModel: ObservableObject {
         self.stealth = stealth
         self.context = context
 
-        // Restore persisted preferences from the vault (behind the PIN).
+        // Restore persisted preferences + chat history from the vault (behind the PIN).
         self.stealthOn = session.hideOnline
         self.hiddenChats = session.hiddenChats
+        self.messages = session.history
         stealth.setEnabled(session.hideOnline)
 
         session.messages
