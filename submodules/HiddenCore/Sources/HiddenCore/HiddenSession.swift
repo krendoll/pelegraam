@@ -284,6 +284,25 @@ public final class HiddenSession {
         seen.insert(msg.id); seenIds[convId] = seen
 
         guard let pt = E2ECrypto.decrypt(msg.blob, key: e2eKey) else { return } // bad tag -> ignore
+
+        // Relay-bridge structured envelopes (a bot photo arrives as
+        // {"t":"img","b64":...}). Decode + store as an inline image instead of
+        // showing the raw JSON as text. Mirrors relay_bridge.py decode_payload;
+        // plain text / iOS media framing / unknown types fall through below.
+        if let env = BridgeEnvelope.parse(pt) {
+            switch env {
+            case let .image(mime, data, caption):
+                guard data.count <= maxMediaBytes,
+                      let blobId = mediaStore.storeSegmented(data, segmentBytes: storeSegmentBytes) else { return }
+                let ref = MediaRef(id: blobId, kind: .image,
+                                   filename: "image." + BridgeEnvelope.imageExtension(forMime: mime),
+                                   mime: mime, size: data.count, segmentBytes: storeSegmentBytes)
+                append(StoredMessage(text: caption, outgoing: false,
+                                     timestamp: Date().timeIntervalSince1970, media: ref), to: convId)
+            }
+            return
+        }
+
         pruneIncoming()
         switch HiddenPayload.decode(pt) {
         case let .text(text):
