@@ -57,6 +57,10 @@ enum HiddenChatsEngine {
                 guard case let .result(maybePeer) = result, let peer = maybePeer else { return }
                 let _ = context.engine.peers.updatePeersGroupIdInteractively(
                     peerIds: [peer.id], groupId: .archive).startStandalone()
+                // Mute forever so the hidden chat produces no notification trace
+                // (Int32.max = muted indefinitely; see ChatContextMenus.swift:918).
+                let _ = context.engine.peers.updatePeerMuteSetting(
+                    peerId: peer.id, threadId: nil, muteInterval: Int32.max).startStandalone()
                 onResolved(peer.id.toInt64(), name)
             })
     }
@@ -64,6 +68,9 @@ enum HiddenChatsEngine {
     static func unhide(peerId: Int64, context: AccountContext) {
         let _ = context.engine.peers.updatePeersGroupIdInteractively(
             peerIds: [EnginePeer.Id(peerId)], groupId: .root).startStandalone()
+        // Restore notifications (0 = unmuted; see ChatContextMenus.swift:727).
+        let _ = context.engine.peers.updatePeerMuteSetting(
+            peerId: EnginePeer.Id(peerId), threadId: nil, muteInterval: 0).startStandalone()
     }
 
     static func open(peerId: Int64, context: AccountContext, navigationController: NavigationController?) {

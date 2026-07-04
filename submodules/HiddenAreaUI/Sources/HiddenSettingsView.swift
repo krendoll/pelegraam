@@ -95,7 +95,7 @@ struct HiddenSettingsView: View {
         } header: {
             Text("Hide a Telegram chat")
         } footer: {
-            Text("Moves a normal Telegram chat into the hidden area. This is a UI hide only — the chat and its data are not deleted from Telegram.")
+            Text("Archives and mutes the chat so it leaves the main list and stops notifying. It is NOT fully erased — it can still be found in Archive and search. The chat and its data are never deleted from Telegram. Only public @username chats can be hidden this way.")
         }
     }
 
