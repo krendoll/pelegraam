@@ -7,6 +7,7 @@ import SwiftSignalKit
 import TelegramPresentationData
 import PresentationDataUtils
 import AccountContext
+import HiddenCore
 import MergeLists
 import ItemListUI
 import ContextUI
@@ -2883,7 +2884,13 @@ final class ChatListSearchListPaneNode: ASDisplayNode, ChatListSearchPaneNode {
             
             return combineLatest(
                 accountPeer,
-                foundLocalPeers,
+                // pelegram: drop hidden peers (.hidden_ids) from local dialog
+                // search results, so a hidden chat can't be surfaced by search.
+                (foundLocalPeers |> map { value -> (peers: [EngineRenderedPeer], unread: [EnginePeer.Id: (Int32, Bool)], recentlySearchedPeerIds: Set<EnginePeer.Id>) in
+                    let hidden = HiddenPeers.shared.all()
+                    if hidden.isEmpty { return value }
+                    return (peers: value.peers.filter { !hidden.contains($0.peerId.toInt64()) }, unread: value.unread, recentlySearchedPeerIds: value.recentlySearchedPeerIds)
+                }),
                 foundRemotePeers,
                 foundRemoteMessages,
                 foundPublicMessages,

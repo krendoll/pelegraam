@@ -40,37 +40,91 @@ struct PickedMedia {
 struct EncryptedImageView: View {
     let ref: MediaRef
     let session: HiddenSession
-    var maxHeight: CGFloat = 260
+    var maxHeight: CGFloat = 320
 
     @State private var image: UIImage?
+    @State private var failed = false
+    @State private var showFull = false
 
     var body: some View {
         Group {
             if let image {
+                // Aspect-FIT (not fill) so the whole photo shows at its natural
+                // ratio — no stretched/cropped grey box. Tap opens it fullscreen.
                 Image(uiImage: image)
                     .resizable()
-                    .scaledToFill()
+                    .aspectRatio(contentMode: .fit)
                     .frame(maxWidth: 240, maxHeight: maxHeight)
-                    .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .contentShape(RoundedRectangle(cornerRadius: 14))
+                    .onTapGesture { showFull = true }
+            } else if failed {
+                HStack(spacing: 8) {
+                    Image(systemName: "photo").foregroundColor(.secondary)
+                    Text("Image unavailable").font(.caption).foregroundColor(.secondary)
+                }
+                .padding(10)
+                .background(Color(.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
             } else {
                 RoundedRectangle(cornerRadius: 14)
                     .fill(Color(.tertiarySystemFill))
-                    .frame(width: 200, height: 160)
+                    .frame(width: 200, height: 150)
                     .overlay(ProgressView())
             }
         }
         .onAppear(perform: load)
+        .fullScreenCover(isPresented: $showFull) {
+            if let image {
+                FullscreenImageViewer(image: image) { showFull = false }
+            }
+        }
     }
 
     private func load() {
-        guard image == nil else { return }
+        guard image == nil, !failed else { return }
         let ref = ref
         let session = session
         DispatchQueue.global(qos: .userInitiated).async {
             let data = session.loadMedia(ref)
             let img = data.flatMap { UIImage(data: $0) }
-            DispatchQueue.main.async { self.image = img }
+            DispatchQueue.main.async {
+                if let img = img { self.image = img } else { self.failed = true }
+            }
+        }
+    }
+}
+
+@available(iOS 15.0, *)
+struct FullscreenImageViewer: View {
+    let image: UIImage
+    var onClose: () -> Void
+    @State private var scale: CGFloat = 1
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            Image(uiImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .scaleEffect(scale)
+                .gesture(
+                    MagnificationGesture()
+                        .onChanged { scale = max(1, min($0, 4)) }
+                        .onEnded { _ in withAnimation { scale = 1 } })
+                .onTapGesture { onClose() }
+            VStack {
+                HStack {
+                    Spacer()
+                    Button(action: onClose) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title)
+                            .foregroundColor(.white.opacity(0.9))
+                            .padding()
+                    }
+                }
+                Spacer()
+            }
         }
     }
 }

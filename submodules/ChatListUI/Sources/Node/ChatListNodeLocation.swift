@@ -5,6 +5,30 @@ import SwiftSignalKit
 import Display
 import TelegramUIPreferences
 import AccountContext
+import HiddenCore
+
+// pelegram: strip hidden peers (HiddenPeers / .hidden_ids) out of every chat-list
+// surface — main list, archive, and all folder tabs all flow through the
+// `EngineChatList` produced below, so filtering here covers them uniformly.
+private func pelegramApplyHiddenPeers(_ list: EngineChatList) -> EngineChatList {
+    let hidden = HiddenPeers.shared.all()
+    if hidden.isEmpty { return list }   // zero overhead when nothing is hidden
+    func keep(_ item: EngineChatList.Item) -> Bool {
+        return !hidden.contains(item.renderedPeer.peerId.toInt64())
+    }
+    let groupItems = list.groupItems.map { group in
+        EngineChatList.GroupItem(
+            id: group.id, topMessage: group.topMessage,
+            items: group.items.filter(keep), unreadCount: group.unreadCount)
+    }
+    return EngineChatList(
+        items: list.items.filter(keep),
+        groupItems: groupItems,
+        additionalItems: list.additionalItems.filter { keep($0.item) },
+        hasEarlier: list.hasEarlier,
+        hasLater: list.hasLater,
+        isLoading: list.isLoading)
+}
 
 public enum ChatListNodeLocation: Equatable {
     case initial(count: Int, filter: ChatListFilter?)
@@ -137,7 +161,7 @@ public func chatListViewForLocation(chatListLocation: ChatListControllerLocation
             signal = account.viewTracker.tailChatListView(groupId: groupId._asGroup(), filterPredicate: filterPredicate, count: count, shouldLoadCanMessagePeer: shouldLoadCanMessagePeer)
             return signal
             |> map { view, updateType -> ChatListNodeViewUpdate in
-                return ChatListNodeViewUpdate(list: EngineChatList(view, accountPeerId: accountPeerId), type: updateType, scrollPosition: nil)
+                return ChatListNodeViewUpdate(list: pelegramApplyHiddenPeers(EngineChatList(view, accountPeerId: accountPeerId)), type: updateType, scrollPosition: nil)
             }
         case let .navigation(index, _):
             guard case let .chatList(index) = index else {
@@ -153,7 +177,7 @@ public func chatListViewForLocation(chatListLocation: ChatListControllerLocation
                 } else {
                     genericType = updateType
                 }
-                return ChatListNodeViewUpdate(list: EngineChatList(view, accountPeerId: accountPeerId), type: genericType, scrollPosition: nil)
+                return ChatListNodeViewUpdate(list: pelegramApplyHiddenPeers(EngineChatList(view, accountPeerId: accountPeerId)), type: genericType, scrollPosition: nil)
             }
         case let .scroll(index, sourceIndex, scrollPosition, animated, _):
             guard case let .chatList(index) = index else {
@@ -173,7 +197,7 @@ public func chatListViewForLocation(chatListLocation: ChatListControllerLocation
                 } else {
                     genericType = updateType
                 }
-                return ChatListNodeViewUpdate(list: EngineChatList(view, accountPeerId: accountPeerId), type: genericType, scrollPosition: scrollPosition)
+                return ChatListNodeViewUpdate(list: pelegramApplyHiddenPeers(EngineChatList(view, accountPeerId: accountPeerId)), type: genericType, scrollPosition: scrollPosition)
             }
         }
     case let .forum(peerId):

@@ -55,6 +55,10 @@ enum HiddenChatsEngine {
         let _ = (context.engine.peers.resolvePeerByName(name: name, referrer: nil)
             |> deliverOnMainQueue).startStandalone(next: { result in
                 guard case let .result(maybePeer) = result, let peer = maybePeer else { return }
+                // Register the peer id so EVERY chat-list surface (main, archive,
+                // all folder tabs, dialog search) filters it out — not just the
+                // main list. This is the ".hidden_ids" filter (HiddenPeers).
+                HiddenPeers.shared.add(peer.id.toInt64())
                 let _ = context.engine.peers.updatePeersGroupIdInteractively(
                     peerIds: [peer.id], groupId: .archive).startStandalone()
                 // Mute forever so the hidden chat produces no notification trace
@@ -66,6 +70,7 @@ enum HiddenChatsEngine {
     }
 
     static func unhide(peerId: Int64, context: AccountContext) {
+        HiddenPeers.shared.remove(peerId)
         let _ = context.engine.peers.updatePeersGroupIdInteractively(
             peerIds: [EnginePeer.Id(peerId)], groupId: .root).startStandalone()
         // Restore notifications (0 = unmuted; see ChatContextMenus.swift:727).
