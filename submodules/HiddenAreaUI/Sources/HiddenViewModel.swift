@@ -119,5 +119,22 @@ final class HiddenViewModel: ObservableObject {
         session.removeConversation(conv.id)
     }
 
+    /// Restore a hidden Telegram chat back to the normal lists (un-archive,
+    /// un-mute, drop from .hidden_ids) and remove it from the hidden area.
+    func unhideTelegramChat(_ conv: Conversation) {
+        removeConversation(conv)
+    }
+
+    /// Safety net: restore EVERY hidden Telegram chat, including any that are in
+    /// .hidden_ids but no longer have a listed conversation (orphans).
+    func unhideAllTelegramChats() {
+        for id in HiddenPeers.shared.all() {
+            onUnhideTelegramChat?(id)           // engine: HiddenPeers.remove + unarchive + unmute
+        }
+        for conv in telegramConversations {
+            session.removeConversation(conv.id) // drop from the hidden-area list/vault
+        }
+    }
+
     func openTelegramChat(_ peerId: Int64) { onOpenTelegramChat?(peerId) }
 }

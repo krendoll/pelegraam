@@ -36,6 +36,7 @@ struct HiddenSettingsView: View {
                 newSecretChatSection
                 newAppChatSection
                 hideTelegramSection
+                hiddenChatsSection
                 privacySection
                 autoDeleteSection
             }
@@ -79,6 +80,36 @@ struct HiddenSettingsView: View {
             Text("New app chat")
         } footer: {
             Text("Chat with an application on your local PC, bot-style, over the relay.")
+        }
+    }
+
+    // MARK: Restore hidden chats
+
+    private var hiddenChatsSection: some View {
+        Section {
+            if model.telegramConversations.isEmpty {
+                Text("No hidden Telegram chats")
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(model.telegramConversations, id: \.id) { conv in
+                    HStack {
+                        Text(conv.title).lineLimit(1)
+                        Spacer()
+                        Button("Restore") { model.unhideTelegramChat(conv) }
+                            .buttonStyle(.borderless)
+                            .foregroundColor(HiddenTheme.accent)
+                    }
+                }
+                Button(role: .destructive) {
+                    model.unhideAllTelegramChats()
+                } label: {
+                    Text("Restore all hidden chats")
+                }
+            }
+        } header: {
+            Text("Hidden Telegram chats")
+        } footer: {
+            Text("Restore brings a chat back to the main list and every folder (un-archives and un-mutes it). Use “Restore all” if a chat got stuck hidden.")
         }
     }
 
