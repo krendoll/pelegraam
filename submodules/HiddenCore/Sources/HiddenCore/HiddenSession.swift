@@ -292,13 +292,20 @@ public final class HiddenSession {
         if let env = BridgeEnvelope.parse(pt) {
             switch env {
             case let .image(mime, data, caption):
-                guard data.count <= maxMediaBytes,
-                      let blobId = mediaStore.storeSegmented(data, segmentBytes: storeSegmentBytes) else { return }
-                let ref = MediaRef(id: blobId, kind: .image,
-                                   filename: "image." + BridgeEnvelope.imageExtension(forMime: mime),
-                                   mime: mime, size: data.count, segmentBytes: storeSegmentBytes)
-                append(StoredMessage(text: caption, outgoing: false,
-                                     timestamp: Date().timeIntervalSince1970, media: ref), to: convId)
+                if data.count <= maxMediaBytes,
+                   let blobId = mediaStore.storeSegmented(data, segmentBytes: storeSegmentBytes) {
+                    let ref = MediaRef(id: blobId, kind: .image,
+                                       filename: "image." + BridgeEnvelope.imageExtension(forMime: mime),
+                                       mime: mime, size: data.count, segmentBytes: storeSegmentBytes)
+                    append(StoredMessage(text: caption, outgoing: false,
+                                         timestamp: Date().timeIntervalSince1970, media: ref), to: convId)
+                } else {
+                    // Never silently drop: if the image can't be stored, surface it
+                    // as text so the message isn't lost (and the failure is visible).
+                    let note = caption.isEmpty ? "📷 [photo]" : "📷 " + caption
+                    append(StoredMessage(text: note, outgoing: false,
+                                         timestamp: Date().timeIntervalSince1970), to: convId)
+                }
             }
             return
         }

@@ -155,7 +155,14 @@ public func chatListViewForLocation(chatListLocation: ChatListControllerLocation
     case let .chatList(groupId):
         let filterPredicate: ChatListFilterPredicate?
         if let filter = location.filter, case let .filter(_, _, _, data) = filter {
-            filterPredicate = chatListFilterPredicate(filter: data, accountPeerId: account.peerId)
+            var pred = chatListFilterPredicate(filter: data, accountPeerId: account.peerId)
+            // pelegram: also exclude hidden peers at the postbox source, so folder
+            // tabs drop them even if some path bypasses the EngineChatList filter.
+            let hiddenIds = HiddenPeers.shared.all()
+            if !hiddenIds.isEmpty {
+                pred.excludePeerIds.formUnion(hiddenIds.map { PeerId($0) })
+            }
+            filterPredicate = pred
         } else {
             filterPredicate = nil
         }
